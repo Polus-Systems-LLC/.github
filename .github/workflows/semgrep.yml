@@ -1,0 +1,39 @@
+name: semgrep
+
+# Reusable check: Semgrep Community Edition (no account, no token) with the
+# p/default registry ruleset. Required by org ruleset A as "semgrep / scan".
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  # Image index digest of semgrep/semgrep:1.184.0. The tag is informational;
+  # Docker resolves the digest. Bump both together.
+  SEMGREP_IMAGE: semgrep/semgrep:1.184.0@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Semgrep
+        # --metrics=off works with the p/default registry config (verified
+        # against 1.184.0: rules download, findings exit 1, clean exits 0). The rule
+        # content of p/default is fetched from the registry at run time and is
+        # not pinned by the image digest.
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/src" \
+            --workdir /src \
+            "$SEMGREP_IMAGE" \
+            semgrep scan --config p/default --metrics=off --error

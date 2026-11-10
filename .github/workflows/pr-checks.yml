@@ -1,0 +1,31 @@
+name: pr-checks
+
+# Runs this repo's own reusable checks on its PRs. The caller job ids are part
+# of the required status check names in org ruleset A: a reusable workflow's
+# check run is named "<caller job> / <called job>", so these produce
+# "naming / check", "gitleaks / scan" and "semgrep / scan". Do not rename them.
+on:
+  pull_request:
+    # edited: re-run the naming check when the PR title changes.
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  naming:
+    permissions: {}
+    uses: ./.github/workflows/naming.yml
+
+  gitleaks:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/gitleaks.yml
+
+  semgrep:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/semgrep.yml
