@@ -39,7 +39,7 @@ jobs:
 name: pr-scans
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize]
   merge_group:
 permissions: {}
 concurrency:
@@ -63,8 +63,10 @@ Rules for callers:
 - No `if:` and no `name:` on the caller jobs, and no `paths` or `branches`
   filters on the triggers. A skipped job reports success to a required check,
   and a workflow that never starts leaves the check waiting forever.
-- Keep `edited` only in `pr-naming.yml` and never add `cancel-in-progress`
-  there; the scans skip `edited` so body edits do not re-run them.
+- Both callers include `edited`: GitHub sends it when the PR's title, body
+  or base branch changes, and the scans trust the base branch, so a
+  retargeted PR must be scanned again. Keep `cancel-in-progress` in
+  `pr-scans.yml` and never add it to `pr-naming.yml`.
 - Pin a full commit SHA that is on this repository's `main`. Before approving
   any pin change, run
   `gh api repos/Polus-Systems-LLC/.github/compare/<sha>...main --jq .status`;

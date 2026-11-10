@@ -2,12 +2,14 @@ name: pr-scans
 
 # Runs this repo's own secret and code scans on its PRs. The job ids produce
 # the required checks "gitleaks / scan" and "semgrep / scan" in org ruleset A.
-# Do not rename the jobs or give them a name:, an if: or a path filter. No
-# "edited" type: a title or body edit does not change the code, so it does
-# not re-run the scans.
+# Do not rename the jobs or give them a name:, an if: or a path filter.
+# Keep "edited": GitHub sends it when the PR's base branch changes, and both
+# scans trust the base commit, so a retargeted PR must be scanned again. It
+# also re-runs the scans on title or body edits; cancel-in-progress keeps
+# only the newest run for the PR.
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize]
   merge_group:
 
 permissions: {}
