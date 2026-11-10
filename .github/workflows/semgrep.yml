@@ -66,6 +66,16 @@ jobs:
           if ! git diff --cached --quiet; then
             git -c user.name=semgrep-check -c user.email=semgrep-check@invalid \
               commit -q --no-verify -m "Use the base commit's .semgrepignore files"
+            # Restoring a base <dir>/.semgrepignore deletes a PR file named
+            # <dir>, which would then never be scanned, so the local commit
+            # may touch .semgrepignore paths only.
+            touched=$(git diff --no-renames --name-only HEAD~1 HEAD)
+            other=$(printf '%s\n' "$touched" | { grep -v -E '(^|/)\.semgrepignore$' || true; })
+            if [ -n "$other" ]; then
+              printf '%s\n' "$other" | sed 's/^/  also changed: /'
+              echo "::error::Resetting .semgrepignore files would change other files."
+              exit 1
+            fi
           fi
           if [ -n "$(git status --porcelain)" ]; then
             git status --porcelain
