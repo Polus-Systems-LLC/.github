@@ -1,0 +1,28 @@
+name: pr-scans
+
+# Runs this repo's own secret and code scans on its PRs. The job ids produce
+# the required checks "gitleaks / scan" and "semgrep / scan" in org ruleset A.
+# Do not rename the jobs or give them a name:, an if: or a path filter. No
+# "edited" type: a title or body edit does not change the code, so it does
+# not re-run the scans.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: pr-scans-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/gitleaks.yml
+
+  semgrep:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/semgrep.yml
