@@ -2,6 +2,11 @@ name: semgrep
 
 # Reusable check: Semgrep Community Edition (no account, no token) with the
 # p/default registry ruleset. Required by org ruleset A as "semgrep / scan".
+#
+# Only findings the PR introduces block it (--baseline-commit), so findings
+# already on the base branch never fail an unrelated PR. The PR cannot hide
+# its own code: .semgrepignore files are reset to the base commit's copies
+# before the scan, and every added nosemgrep comment is annotated for review.
 on:
   workflow_call:
 
@@ -20,20 +25,108 @@ jobs:
       contents: read
     timeout-minutes: 20
     steps:
-      - name: Check out
+      - name: Require a pull_request or merge_group event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request|merge_group) ;;
+            *)
+              echo "::error::semgrep scan only runs on pull_request and merge_group events (got '$EVENT_NAME')."
+              exit 1
+              ;;
+          esac
+
+      - name: Check out full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Reset .semgrepignore files to the base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE_SHA" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::Base commit '${BASE_SHA}' is not in the clone."
+            exit 1
+          fi
+          # A PR could add or edit a .semgrepignore to skip its own files, so
+          # the reviewed copies from the base commit replace them. The result
+          # is committed locally (never pushed) because --baseline-commit is
+          # documented to abort on unstaged changes.
+          git rm -q --ignore-unmatch -- ':(glob)**/.semgrepignore'
+          # grep exits 1 when the base commit has no .semgrepignore at all.
+          git ls-tree -r -z --name-only "$BASE_SHA" |
+            { grep -z -E '(^|/)\.semgrepignore$' || true; } |
+            xargs -0 -r git checkout "$BASE_SHA" --
+          echo "Effective .semgrepignore files:"
+          find . -name .semgrepignore -not -path './.git/*' -print
+          if ! git diff --cached --quiet; then
+            git -c user.name=semgrep-check -c user.email=semgrep-check@invalid \
+              commit -q --no-verify -m "Use the base commit's .semgrepignore files"
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::The checkout is not clean after resetting .semgrepignore files."
+            exit 1
+          fi
+
+      - name: Annotate added nosemgrep comments
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          # The PR's .gitattributes must not hide lines from this diff.
+          GIT_ATTR_SOURCE: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+        # Suppressions stay allowed but never silent: each added line holding
+        # nosem or nosemgrep gets a warning on the PR's Files changed tab.
+        run: |
+          set -euo pipefail
+          git diff --text --no-ext-diff --no-color -U0 "${BASE_SHA}...${HEAD_SHA}" |
+            python3 -I -c '
+          import re, sys
+
+          def prop(value):
+              # Escape a workflow command property so a crafted path cannot
+              # end the property or start a new command.
+              for char, code in (("%", "%25"), ("\r", "%0D"), ("\n", "%0A"), (":", "%3A"), (",", "%2C")):
+                  value = value.replace(char, code)
+              return value
+
+          path, line, count, in_header = None, 0, 0, False
+          for raw in sys.stdin.buffer:
+              text = raw.decode("utf-8", "replace").rstrip("\n")
+              if text.startswith("diff --git "):
+                  path, in_header = None, True
+              elif in_header and text.startswith("+++ "):
+                  path = None if text == "+++ /dev/null" else text[6:]
+              elif text.startswith("@@"):
+                  in_header = False
+                  match = re.search(r"\+(\d+)", text)
+                  line = int(match.group(1)) if match else 0
+              elif not in_header and text.startswith("+") and path is not None:
+                  if re.search(r"nosem", text, re.IGNORECASE):
+                      count += 1
+                      print(f"::warning file={prop(path)},line={line}::Added a nosemgrep suppression. A code owner should confirm it is justified.")
+                  line += 1
+          print(f"Added nosemgrep comments: {count}")
+          '
+
       - name: Run Semgrep
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         # --metrics=off works with the p/default registry config (verified
-        # against 1.184.0: rules download, findings exit 1, clean exits 0). The rule
-        # content of p/default is fetched from the registry at run time and is
-        # not pinned by the image digest.
+        # against 1.184.0: rules download, findings exit 1, clean exits 0). The
+        # rule content of p/default is fetched from the registry at run time
+        # and is not pinned by the image digest. --baseline-commit reports
+        # only findings that are not already in the base commit, and aborts
+        # if that commit is missing.
         run: |
           set -euo pipefail
           docker run --rm \
             --volume "${GITHUB_WORKSPACE}:/src" \
             --workdir /src \
             "$SEMGREP_IMAGE" \
-            semgrep scan --config p/default --metrics=off --error
+            semgrep scan --config p/default --metrics=off --error \
+              --baseline-commit "$BASE_SHA"
