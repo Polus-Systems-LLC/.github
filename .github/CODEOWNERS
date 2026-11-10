@@ -1,0 +1,3 @@
+# Every file in this repository is code-owned: the reusable checks here are
+# the trust root for every repository that calls them.
+* @polus-1

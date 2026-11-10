@@ -1,0 +1,19 @@
+name: pr-naming
+
+# Runs this repo's own naming check on its PRs. The check run is named
+# "<caller job> / <called job>", so the job id "naming" produces the required
+# check "naming / check" in org ruleset A. Do not rename the job or give it a
+# name:, an if: or a path filter. No cancel-in-progress: a cancelled run would
+# stay the latest result for the check and block the merge.
+on:
+  pull_request:
+    # edited: re-run when the PR title changes.
+    types: [opened, edited, reopened, synchronize]
+  merge_group:
+
+permissions: {}
+
+jobs:
+  naming:
+    permissions: {}
+    uses: ./.github/workflows/naming.yml

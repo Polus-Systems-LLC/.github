@@ -1,0 +1,137 @@
+name: gitleaks
+
+# Reusable check: scan the commits a PR adds for secrets with the Gitleaks
+# CLI. Required by org ruleset A as "gitleaks / scan". The CLI is used directly
+# because gitleaks/gitleaks-action needs a paid license for organizations.
+#
+# Nothing in the PR can weaken the scan: the config and ignore list come from
+# the base commit, inline gitleaks:allow comments are ignored, and the PR's
+# .gitattributes cannot hide files from the diff.
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, copied from the release's
+  # gitleaks_8.30.1_checksums.txt and cross-checked against the asset digest
+  # GitHub reports for the release. Bump both values together.
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Require a pull_request or merge_group event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request|merge_group) ;;
+            *)
+              echo "::error::gitleaks scan only runs on pull_request and merge_group events (got '$EVENT_NAME')."
+              exit 1
+              ;;
+          esac
+
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Gitleaks
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          "$RUNNER_TEMP/gitleaks/gitleaks" version
+
+      - name: Scan the PR commit range
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          # The empty tree: git reads no .gitattributes from the PR, so a
+          # "* -diff" or "*.env binary" line cannot turn a file into
+          # "Binary files differ", which gitleaks skips. Needs git 2.40+.
+          GIT_ATTR_SOURCE: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          # Older git ignores GIT_ATTR_SOURCE without an error, which fails open.
+          git_version="$(git version | awk '{print $3}')"
+          git_major="$(echo "$git_version" | cut -d. -f1)"
+          git_minor="$(echo "$git_version" | cut -d. -f2)"
+          if [ "$git_major" -lt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -lt 40 ]; }; then
+            fail "git ${git_version} is older than 2.40 and would ignore GIT_ATTR_SOURCE."
+          fi
+
+          # Gitleaks logs an unknown revision, then reports "no leaks found"
+          # and exits 0, so prove both ends of the range exist first.
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if [ -z "$sha" ] || ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              fail "Commit '${sha}' is not in the clone, so the scan range cannot be resolved."
+            fi
+          done
+
+          # --diff-merges=remerge shows what a two-parent merge commit added
+          # beyond the automatic merge, but nothing for a merge with three or
+          # more parents, so refuse those instead of skipping them.
+          if [ -n "$(git rev-list --min-parents=3 "${BASE_SHA}..${HEAD_SHA}")" ]; then
+            fail "The PR contains a merge commit with three or more parents, which cannot be scanned. Rebase, or merge one branch at a time."
+          fi
+
+          # Config and ignore list come from the reviewed base commit, never
+          # from the PR's working tree.
+          config="$RUNNER_TEMP/gitleaks-config.toml"
+          ignore="$RUNNER_TEMP/gitleaks-ignore"
+          if git cat-file -e "${BASE_SHA}:.gitleaks.toml" 2>/dev/null; then
+            git show "${BASE_SHA}:.gitleaks.toml" > "$config"
+            echo "Using .gitleaks.toml from the base commit."
+          else
+            printf '[extend]\nuseDefault = true\n' > "$config"
+            echo "Using the default Gitleaks rules."
+          fi
+          if git cat-file -e "${BASE_SHA}:.gitleaksignore" 2>/dev/null; then
+            git show "${BASE_SHA}:.gitleaksignore" > "$ignore"
+            echo "Using .gitleaksignore from the base commit."
+          else
+            : > "$ignore"
+          fi
+          # Gitleaks also loads <source>/.gitleaksignore whatever -i says.
+          rm -f "$GITHUB_WORKSPACE/.gitleaksignore"
+
+          # Run outside the checkout so a relative "[extend] path" in the
+          # config cannot resolve to a file the PR controls.
+          cd "$RUNNER_TEMP"
+          stderr_log="$RUNNER_TEMP/gitleaks-stderr.log"
+          status=0
+          "$RUNNER_TEMP/gitleaks/gitleaks" git \
+            --log-opts "--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" \
+            --config "$config" \
+            --gitleaks-ignore-path "$ignore" \
+            --ignore-gitleaks-allow \
+            --redact \
+            --verbose \
+            --no-banner \
+            --exit-code 1 \
+            "$GITHUB_WORKSPACE" 2> "$stderr_log" || status=$?
+          cat "$stderr_log" >&2
+
+          # A git error inside gitleaks can still end in "no leaks found".
+          if sed 's/\x1b\[[0-9;]*m//g' "$stderr_log" | grep -q ' ERR '; then
+            fail "Gitleaks logged an error, so the result cannot be trusted."
+          fi
+          if [ "$status" -ne 0 ]; then
+            fail "Gitleaks found secrets or failed (exit ${status}). Findings are listed above with the secret redacted."
+          fi
