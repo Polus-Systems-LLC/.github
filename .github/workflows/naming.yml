@@ -21,34 +21,47 @@ jobs:
         # title cannot inject shell.
         env:
           EVENT_NAME: ${{ github.event_name }}
-          ACTOR: ${{ github.actor }}
           HEAD_REF: ${{ github.head_ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: |
           set -euo pipefail
 
-          if [ "$EVENT_NAME" != "pull_request" ]; then
-            echo "::error::naming check only runs on pull_request events (got '$EVENT_NAME')."
-            exit 1
-          fi
+          case "$EVENT_NAME" in
+            pull_request) ;;
+            merge_group)
+              # The PR already passed this check before it joined the queue.
+              echo "merge_group event: naming was checked on the pull request."
+              exit 0
+              ;;
+            *)
+              echo "::error::naming check only runs on pull_request and merge_group events (got '$EVENT_NAME')."
+              exit 1
+              ;;
+          esac
 
-          # Bot PRs (Dependabot and other apps) cannot follow the Jira convention.
-          if [ "$ACTOR" = "dependabot[bot]" ] || [[ "$HEAD_REF" == dependabot/* ]] || [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
-            echo "Bot pull request (actor '$ACTOR', author type '$PR_AUTHOR_TYPE'): naming check skipped."
+          # PRs opened by apps (Dependabot and others) cannot follow the Jira
+          # convention. The author type is set by GitHub, unlike the branch
+          # name, which any human can choose.
+          if [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
+            echo "Pull request opened by a bot: naming check skipped."
             exit 0
           fi
 
           branch_re='^(feat|fix|hotfix|chore|docs|refactor|test|ci)/PLS-[0-9]+-[a-z0-9-]+$'
           title_re='^PLS-[0-9]+: .+'
+          # GitHub's Revert button creates these, so an emergency revert
+          # does not need a hand-made branch.
+          revert_branch_re='^revert-[0-9]+-'
+          revert_title_re='^Revert "'
           failed=0
 
-          if [[ ! "$HEAD_REF" =~ $branch_re ]]; then
+          if [[ ! "$HEAD_REF" =~ $branch_re ]] && [[ ! "$HEAD_REF" =~ $revert_branch_re ]]; then
             echo "::error::Branch '$HEAD_REF' does not match <type>/PLS-<number>-<slug>. Allowed types: feat, fix, hotfix, chore, docs, refactor, test, ci. The slug uses lowercase letters, digits and hyphens. Example: feat/PLS-93-polus-infra"
             failed=1
           fi
 
-          if [[ ! "$PR_TITLE" =~ $title_re ]]; then
+          if [[ ! "$PR_TITLE" =~ $title_re ]] && [[ ! "$PR_TITLE" =~ $revert_title_re ]]; then
             echo "::error::PR title '$PR_TITLE' does not match 'PLS-<number>: <summary>'. Example: PLS-93: Add Terraform for org rulesets"
             failed=1
           fi
