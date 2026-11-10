@@ -83,7 +83,9 @@ Rules for callers:
   finding's `Fingerprint` from the scan log into `.gitleaksignore` in a
   separate, code-owner-reviewed PR. It takes effect once merged; then update
   the blocked PR from its base branch. The commit-less form
-  `<file>:<rule>:<line>` survives a rebase.
+  `<file>:<rule>:<line>` survives a rebase. A base `.gitleaks.toml` must not
+  use a relative `[extend] path`: the scan runs outside the checkout, so the
+  path does not resolve and the scan fails.
 - Semgrep reports only findings the PR introduces. Suppress one with a
   `nosemgrep` comment on the line; each added suppression is annotated as a
   warning for the reviewer. `.semgrepignore` files are also read from the
