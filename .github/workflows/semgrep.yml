@@ -4,9 +4,11 @@ name: semgrep
 # p/default registry ruleset. Required by org ruleset A as "semgrep / scan".
 #
 # Only findings the PR introduces block it (--baseline-commit), so findings
-# already on the base branch never fail an unrelated PR. The PR cannot hide
-# its own code: .semgrepignore files are reset to the base commit's copies
-# before the scan, and every added nosemgrep comment is annotated for review.
+# already on the base branch never fail an unrelated PR. A PR's own
+# .semgrepignore changes are not applied: the scan uses the base commit's
+# copies, refuses one that uses :include, and every added nosemgrep comment
+# is annotated for review. This trusts the base branch, so it must be
+# protected and the ignore files code-owned.
 on:
   workflow_call:
 
@@ -58,9 +60,22 @@ jobs:
           # documented to abort on unstaged changes.
           git rm -q --ignore-unmatch -- ':(glob)**/.semgrepignore'
           # grep exits 1 when the base commit has no .semgrepignore at all.
+          base_ignores="$RUNNER_TEMP/base-semgrepignore-files"
           git ls-tree -r -z --name-only "$BASE_SHA" |
-            { grep -z -E '(^|/)\.semgrepignore$' || true; } |
-            xargs -0 -r git checkout "$BASE_SHA" --
+            { grep -z -E '(^|/)\.semgrepignore$' || true; } > "$base_ignores"
+          xargs -0 -r git checkout "$BASE_SHA" -- < "$base_ignores"
+          # ":include <file>" reads that file (typically .gitignore) from the
+          # PR's tree, which would let the PR ignore its own files again. A
+          # file grep cannot read fails closed too.
+          while IFS= read -r -d '' ignore_file; do
+            status=0
+            grep -q -E '^[[:space:]]*:include' -- "$ignore_file" || status=$?
+            if [ "$status" -ne 1 ]; then
+              printf '  offending file: %q\n' "$ignore_file"
+              echo "::error::A base .semgrepignore uses :include (or could not be read). Inline the patterns instead; :include would read a file the PR controls."
+              exit 1
+            fi
+          done < "$base_ignores"
           echo "Effective .semgrepignore files:"
           find . -name .semgrepignore -not -path './.git/*' -print
           if ! git diff --cached --quiet; then

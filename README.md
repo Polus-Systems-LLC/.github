@@ -73,8 +73,8 @@ Rules for callers:
   it must print `ahead` or `identical`. Anything else (for example a commit
   that exists only in a fork) is rejected.
 - Code-own the files that control the checks: `/.github/`, `.gitattributes`,
-  `**/.gitattributes`, `.gitleaks.toml`, `.gitleaksignore`, `.semgrepignore`
-  and `**/.semgrepignore`.
+  `**/.gitattributes`, `.gitignore`, `.gitleaks.toml`, `.gitleaksignore`,
+  `.semgrepignore` and `**/.semgrepignore`.
 
 ## Clearing a false positive
 
@@ -87,7 +87,9 @@ Rules for callers:
 - Semgrep reports only findings the PR introduces. Suppress one with a
   `nosemgrep` comment on the line; each added suppression is annotated as a
   warning for the reviewer. `.semgrepignore` files are also read from the
-  base commit, so a change to them takes effect once merged.
+  base commit, so a change to them takes effect once merged. They must not
+  use `:include`: it would read a file such as `.gitignore` from the PR, so
+  the scan fails instead. List the patterns directly.
 
 ## Naming convention
 
