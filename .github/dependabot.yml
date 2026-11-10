@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Hold new action releases for a week before proposing them, so a
+    # compromised release has time to be caught upstream. Security updates
+    # ignore cooldown.
+    cooldown:
+      default-days: 7
